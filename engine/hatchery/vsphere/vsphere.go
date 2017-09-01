@@ -17,7 +17,6 @@ import (
 )
 
 var hatcheryVSphere *HatcheryVSphere
-var workersAlive map[string]int64
 
 // HatcheryVSphere spawns vm
 type HatcheryVSphere struct {
@@ -47,7 +46,6 @@ type HatcheryVSphere struct {
 func (h *HatcheryVSphere) CanSpawn(model *sdk.Model, jobID int64, requirements []sdk.Requirement) bool {
 	for _, r := range requirements {
 		if r.Type == sdk.ServiceRequirement || r.Type == sdk.MemoryRequirement {
-			fmt.Println("faaaalse")
 			return false
 		}
 	}
@@ -72,16 +70,6 @@ func (h *HatcheryVSphere) KillWorker(worker sdk.Worker) error {
 
 // NeedRegistration return true if worker model need regsitration
 func (h *HatcheryVSphere) NeedRegistration(m *sdk.Model) bool {
-	// var oldVersion bool
-	// model, errM := h.getModelByName(m.Name)
-	// if errM == nil {
-	// 	var annot annotation
-	//
-	// 	if err := json.Unmarshal([]byte(model.Config.Annotation), &annot); err == nil {
-	// 		oldVersion = !annot.WorkerModelLastModified.IsZero() && annot.WorkerModelLastModified != m.UserLastModified
-	// 	}
-	// }
-
 	return m.NeedRegistration
 }
 
@@ -132,7 +120,7 @@ func (h *HatcheryVSphere) ID() int64 {
 func (h *HatcheryVSphere) main() {
 	serverListTick := time.NewTicker(10 * time.Second).C
 	killAwolServersTick := time.NewTicker(20 * time.Second).C
-	// killErrorServersTick := time.NewTicker(60 * time.Second).C
+	killErrorServersTick := time.NewTicker(120 * time.Second).C
 	killDisabledWorkersTick := time.NewTicker(60 * time.Second).C
 
 	for {
@@ -144,8 +132,8 @@ func (h *HatcheryVSphere) main() {
 		case <-killAwolServersTick:
 			h.killAwolServers()
 
-		// case <-killErrorServersTick:
-		// 	h.killErrorServers()
+		case <-killErrorServersTick:
+			h.killErrorServers()
 
 		case <-killDisabledWorkersTick:
 			h.killDisabledWorkers()
@@ -177,6 +165,7 @@ func (h *HatcheryVSphere) updateServerList() {
 	}
 }
 
+// killDisabledWorkers kill workers which are disabled
 func (h *HatcheryVSphere) killDisabledWorkers() {
 	workers, err := h.Client().WorkerList()
 	if err != nil {
@@ -201,12 +190,13 @@ func (h *HatcheryVSphere) killDisabledWorkers() {
 	}
 }
 
+// killAwolServers kill unused servers
 func (h *HatcheryVSphere) killAwolServers() {
 	srvs := h.getServers()
 
 	for _, s := range srvs {
 		var annot annotation
-		if s.Config == nil {
+		if s.Config == nil || s.Config.Annotation == "" {
 			continue
 		}
 		if err := json.Unmarshal([]byte(s.Config.Annotation), &annot); err != nil {
@@ -216,6 +206,27 @@ func (h *HatcheryVSphere) killAwolServers() {
 		if annot.ToDelete || (s.Summary.Runtime.PowerState != types.VirtualMachinePowerStatePoweredOn && (!annot.Model || annot.RegisterOnly)) {
 			if err := h.deleteServer(s); err != nil {
 				log.Warning("killAwolServers> cannot delete server %s", s.Name)
+			}
+		}
+	}
+}
+
+// killErrorServers kill servers which are running for too long time
+func (h *HatcheryVSphere) killErrorServers() {
+	srvs := h.getServers()
+
+	for _, s := range srvs {
+		var annot annotation
+		if s.Config == nil || s.Config.Annotation == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(s.Config.Annotation), &annot); err != nil {
+			continue
+		}
+
+		if !annot.Model && annot.Created.Before(time.Now().Add(-4*time.Hour)) {
+			if err := h.deleteServer(s); err != nil {
+				log.Warning("killErrorServers> cannot delete server %s", s.Name)
 			}
 		}
 	}
